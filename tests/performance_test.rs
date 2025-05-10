@@ -1,9 +1,9 @@
 use std::time::{Instant, Duration};
-use tempfile::NamedTempFile;
 use rusqlite::{Connection, Result as RusqliteResult};
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
 use std::env;
+use std::path::Path;
 
 // 获取正确的二进制名称
 fn get_bin_name() -> String {
@@ -54,51 +54,57 @@ struct SupplierRow {
 }
 
 // 创建测试数据库
-fn setup_test_db() -> (NamedTempFile, String) {
+fn setup_test_db() -> String {
     // 获取锁，确保互斥访问
     let _guard = match TEST_MUTEX.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(), // 恢复poisoned锁
     };
     
-    let db_file = NamedTempFile::new().unwrap();
-    let db_path = db_file.path().to_str().unwrap().to_string();
+    // 使用固定测试文件路径但添加时间戳确保唯一性
+    let temp_dir = env::temp_dir();
+    let unique_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    let db_path = temp_dir.join(format!("test_perf_{}.db", unique_id)).to_str().unwrap().to_string();
     
-    // 保存当前环境变量，便于测试后恢复
-    let old_db_file = std::env::var("DB_FILE").ok();
-    // 设置环境变量，指向测试数据库
-    std::env::set_var("DB_FILE", &db_path);
+    // 确保不存在同名文件
+    if Path::new(&db_path).exists() {
+        std::fs::remove_file(&db_path).unwrap_or_else(|e| {
+            println!("无法删除旧测试数据库文件: {}", e);
+        });
+    }
     
     // 初始化数据库
     let conn = Connection::open(&db_path).unwrap();
-    let create_table_sql = r#"
-    CREATE TABLE IF NOT EXISTS suppliers (
+    let create_table_sql = "CREATE TABLE IF NOT EXISTS suppliers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        contact TEXT,                       -- 联系人
-        wechat TEXT,                        -- 微信
-        phone TEXT,                         -- 电话
-        quantity INTEGER,                   -- 数量
-        location TEXT,                      -- 地点
-        price REAL,                         -- 价格
-        bandwidth_price REAL,               -- 带宽价格
-        storage_price REAL,                 -- 存储价格
-        min_contract_period TEXT,           -- 最短合同期
-        breach_penalties TEXT,              -- 违约金
-        payment_terms TEXT,                 -- 付款方式
-        server_name TEXT,                   -- 服务器名称
-        server_config TEXT,                 -- 服务器配置
-        rental_model TEXT,                  -- 租赁模式
-        networking_category TEXT            -- 网络类型
-    );
-    "#;
+        contact TEXT,
+        wechat TEXT,
+        phone TEXT,
+        quantity INTEGER,
+        location TEXT,
+        price REAL,
+        bandwidth_price REAL,
+        storage_price REAL,
+        min_contract_period TEXT,
+        breach_penalties TEXT,
+        payment_terms TEXT,
+        server_name TEXT,
+        server_config TEXT,
+        rental_model TEXT,
+        networking_category TEXT
+    );";
     conn.execute_batch(create_table_sql).unwrap();
     
-    // 如果有旧环境变量，则在测试结束后恢复
-    if let Some(old_path) = old_db_file {
-        std::env::set_var("DB_FILE", old_path);
-    }
+    // 关闭连接确保写入
+    drop(conn);
     
-    (db_file, db_path)
+    // 设置环境变量
+    env::set_var("DB_FILE", &db_path);
+    
+    db_path
 }
 
 // 批量插入供应商数据
@@ -267,7 +273,7 @@ fn performance_test() {
     }
     
     // 设置测试数据库
-    let (_db_file, db_path) = setup_test_db();
+    let db_path = setup_test_db();
     
     // 测试数据量
     let record_count = 1000;  // 实际测试可以调整为更大的值

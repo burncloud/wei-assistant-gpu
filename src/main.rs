@@ -783,58 +783,90 @@ mod tests {
 
     static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
-    fn setup_test_db() -> (NamedTempFile, String) {
+    fn setup_test_db() -> String {
         // 使用std::sync::Mutex的try_lock而不是unwrap，避免PoisonError
         let _guard = match TEST_MUTEX.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(), // 恢复poisoned锁
         };
         
-        // 创建临时数据库文件
-        let dbfile = NamedTempFile::new().unwrap();
-        let db_path = dbfile.path().to_str().unwrap().to_string();
+        // 使用固定测试文件路径，但添加唯一标识符
+        let temp_dir = std::env::temp_dir();
+        let unique_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let db_path = temp_dir.join(format!("test_suppliers_{}.db", unique_id)).to_str().unwrap().to_string();
         
-        // 保存当前环境变量值
-        let old_db_file = std::env::var("DB_FILE").ok();
+        // 确保数据库文件不存在（如果存在则删除）
+        if std::path::Path::new(&db_path).exists() {
+            std::fs::remove_file(&db_path).unwrap_or_else(|e| {
+                println!("无法删除旧测试数据库文件: {}", e);
+            });
+        }
+        
+        // 直接执行表创建SQL，不依赖全局状态
+        let conn = match Connection::open(&db_path) {
+            Ok(conn) => conn,
+            Err(e) => panic!("打开数据库连接失败: {} - 路径: {}", e, db_path),
+        };
+        
+        let create_table_sql = "CREATE TABLE IF NOT EXISTS suppliers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact TEXT,
+            wechat TEXT,
+            phone TEXT,
+            quantity INTEGER,
+            location TEXT,
+            price REAL,
+            bandwidth_price REAL,
+            storage_price REAL,
+            min_contract_period TEXT,
+            breach_penalties TEXT,
+            payment_terms TEXT,
+            server_name TEXT,
+            server_config TEXT,
+            rental_model TEXT,
+            networking_category TEXT
+        );";
+        
+        match conn.execute_batch(create_table_sql) {
+            Ok(_) => println!("测试数据库表创建成功: {}", db_path),
+            Err(e) => panic!("测试数据库表创建失败: {}", e),
+        }
+        
+        // 验证表是否创建成功
+        let mut stmt = match conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='suppliers'") {
+            Ok(stmt) => stmt,
+            Err(e) => panic!("准备验证SQL失败: {}", e),
+        };
+        
+        let exists: bool = match stmt.exists([]) {
+            Ok(exists) => exists,
+            Err(e) => panic!("验证表是否存在失败: {}", e),
+        };
+        
+        if !exists {
+            panic!("创建表后验证失败，表suppliers不存在");
+        } else {
+            println!("表suppliers存在验证通过");
+        }
+        
+        // 关闭连接，确保所有操作都写入磁盘
+        drop(stmt);
+        drop(conn);
         
         // 设置环境变量，指向测试数据库
         std::env::set_var("DB_FILE", &db_path);
         
-        // 直接执行表创建SQL，不依赖全局状态
-        let conn = Connection::open(&db_path).unwrap();
-        let create_table_sql = r#"
-        CREATE TABLE IF NOT EXISTS suppliers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            contact TEXT,                       -- 联系人
-            wechat TEXT,                        -- 微信
-            phone TEXT,                         -- 电话
-            quantity INTEGER,                   -- 数量
-            location TEXT,                      -- 地点
-            price REAL,                         -- 价格
-            bandwidth_price REAL,               -- 带宽价格
-            storage_price REAL,                 -- 存储价格
-            min_contract_period TEXT,           -- 最短合同期
-            breach_penalties TEXT,              -- 违约金
-            payment_terms TEXT,                 -- 付款方式
-            server_name TEXT,                   -- 服务器名称
-            server_config TEXT,                 -- 服务器配置
-            rental_model TEXT,                  -- 租赁模式
-            networking_category TEXT            -- 网络类型
-        );
-        "#;
-        conn.execute_batch(create_table_sql).unwrap();
-        
-        // 如果有原始环境变量，恢复它
-        if let Some(old_path) = old_db_file {
-            std::env::set_var("DB_FILE", old_path);
-        }
-        
-        (dbfile, db_path)
+        db_path
     }
 
     #[test]
     fn test_init_db() {
-        let (_, db_path) = setup_test_db();
+        let db_path = setup_test_db();
+        
+        // 直接使用传递过来的数据库路径
         let conn = Connection::open(&db_path).unwrap();
         let mut stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='suppliers'").unwrap();
         let exists: bool = stmt.exists([]).unwrap();
@@ -843,13 +875,18 @@ mod tests {
 
     #[test]
     fn test_query_empty_db() {
-        let (_, db_path) = setup_test_db();
+        let db_path = setup_test_db();
         
-        // 使用本地变量存储数据库路径，不使用全局DB_FILE
+        // 直接使用传递过来的数据库路径
         let conn = Connection::open(&db_path).unwrap();
         
         // 用空的查询参数查询，确认返回0条记录
         let _args = QueryArgs::default();
+        
+        // 验证表结构是否存在
+        let mut check_stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='suppliers'").unwrap();
+        let exists: bool = check_stmt.exists([]).unwrap();
+        assert!(exists, "suppliers表不存在");
         
         // 直接在数据库上查询，不走全局函数
         let sql = "SELECT id, contact, wechat, phone, quantity, location, price, bandwidth_price, 
@@ -885,10 +922,15 @@ mod tests {
 
     #[test]
     fn test_insert_and_query_supplier() {
-        let (_, db_path) = setup_test_db();
+        let db_path = setup_test_db();
         
         // 直接使用本地连接，不使用全局函数
         let conn = Connection::open(&db_path).unwrap();
+        
+        // 验证表结构是否存在
+        let mut check_stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='suppliers'").unwrap();
+        let exists: bool = check_stmt.exists([]).unwrap();
+        assert!(exists, "suppliers表不存在");
         
         let supplier = Supplier {
             contact: Some("张三".to_string()),
@@ -947,10 +989,15 @@ mod tests {
 
     #[test]
     fn test_query_single_record() {
-        let (_, db_path) = setup_test_db();
+        let db_path = setup_test_db();
         
         // 直接使用本地连接，不使用全局函数
         let conn = Connection::open(&db_path).unwrap();
+        
+        // 验证表结构是否存在
+        let mut check_stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='suppliers'").unwrap();
+        let exists: bool = check_stmt.exists([]).unwrap();
+        assert!(exists, "suppliers表不存在");
         
         let supplier = Supplier {
             contact: Some("张三".to_string()),
@@ -1009,86 +1056,69 @@ mod tests {
 
     #[test]
     fn test_query_multiple_records() {
-        let (_, db_path) = setup_test_db();
+        let db_path = setup_test_db();
         
         // 直接使用本地连接，不使用全局函数
         let conn = Connection::open(&db_path).unwrap();
         
-        let suppliers = vec![
-            Supplier {
-                contact: Some("张三".to_string()),
-                wechat: Some("wxid1".to_string()),
-                phone: Some("12345678901".to_string()),
-                quantity: Some(10),
-                location: Some("北京".to_string()),
-                price: Some(1000.0),
-                bandwidth_price: Some(100.0),
-                storage_price: Some(50.0),
-                min_contract_period: Some("12个月".to_string()),
-                breach_penalties: Some("无".to_string()),
-                payment_terms: Some("月付".to_string()),
-                server_name: Some("服务器A".to_string()),
-                server_config: Some("8核16G".to_string()),
-                rental_model: Some("包年".to_string()),
-                networking_category: Some("BGP".to_string()),
-            },
-            Supplier {
-                contact: Some("李四".to_string()),
-                wechat: Some("wxid2".to_string()),
-                phone: Some("12345678902".to_string()),
-                quantity: Some(5),
-                location: Some("上海".to_string()),
-                price: Some(800.0),
-                bandwidth_price: Some(80.0),
-                storage_price: Some(40.0),
-                min_contract_period: Some("6个月".to_string()),
-                breach_penalties: Some("无".to_string()),
-                payment_terms: Some("月付".to_string()),
-                server_name: Some("服务器B".to_string()),
-                server_config: Some("4核8G".to_string()),
-                rental_model: Some("包月".to_string()),
-                networking_category: Some("BGP".to_string()),
-            },
-        ];
-
-        // 直接在数据库中插入数据
-        let sql = r#"
-            INSERT INTO suppliers (
-                contact, wechat, phone, quantity, location, price, bandwidth_price, storage_price, 
-                min_contract_period, breach_penalties, payment_terms, server_name, server_config, 
-                rental_model, networking_category
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-        "#;
+        // 验证表结构是否存在
+        let mut check_stmt = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='suppliers'").unwrap();
+        let exists: bool = check_stmt.exists([]).unwrap();
+        assert!(exists, "suppliers表不存在");
         
-        for s in suppliers {
-            conn.execute(sql, [
-                s.contact.as_deref(),
-                s.wechat.as_deref(),
-                s.phone.as_deref(),
-                s.quantity.map(|v| v.to_string()).as_deref(),
-                s.location.as_deref(),
-                s.price.map(|v| v.to_string()).as_deref(),
-                s.bandwidth_price.map(|v| v.to_string()).as_deref(),
-                s.storage_price.map(|v| v.to_string()).as_deref(),
-                s.min_contract_period.as_deref(),
-                s.breach_penalties.as_deref(),
-                s.payment_terms.as_deref(),
-                s.server_name.as_deref(),
-                s.server_config.as_deref(),
-                s.rental_model.as_deref(),
-                s.networking_category.as_deref(),
-            ]).unwrap();
+        // 插入多条测试数据
+        let locations = ["北京", "上海", "广州", "深圳", "杭州"];
+        
+        for (i, location) in locations.iter().enumerate() {
+            let contact = format!("联系人{}", i + 1);
+            let wechat = format!("wx{}", i + 1);
+            let phone = format!("1380013800{}", i + 1);
+            let quantity = (i + 1) * 10;
+            let price = 1000.0 + i as f64 * 100.0;
+            
+            let sql = r#"
+                INSERT INTO suppliers (
+                    contact, wechat, phone, quantity, location, price
+                ) VALUES (?, ?, ?, ?, ?, ?)
+            "#;
+            conn.execute(
+                sql,
+                [
+                    contact.as_str(),
+                    wechat.as_str(),
+                    phone.as_str(),
+                    &quantity.to_string(),
+                    location,
+                    &price.to_string(),
+                ],
+            ).unwrap();
         }
-
-        // 直接在数据库中查询
-        let query_sql = "SELECT contact FROM suppliers WHERE location = ?";
-        let mut stmt = conn.prepare(query_sql).unwrap();
-        let result = stmt.query_map(["北京"], |row| {
-            Ok(row.get::<_, String>(0)?)
-        }).unwrap().map(|r| r.unwrap()).collect::<Vec<_>>();
-
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], "张三");
+        
+        // 直接在数据库中查询全部记录
+        let query_all_sql = "SELECT COUNT(*) FROM suppliers";
+        let total: i32 = conn.query_row(query_all_sql, [], |row| row.get(0)).unwrap();
+        assert_eq!(total, 5, "应该插入了5条记录");
+        
+        // 按位置查询
+        let query_location_sql = "SELECT contact FROM suppliers WHERE location = ?";
+        let mut stmt = conn.prepare(query_location_sql).unwrap();
+        let beijing_records: Vec<String> = stmt.query_map(["北京"], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+            
+        assert_eq!(beijing_records.len(), 1, "北京位置应有1条记录");
+        assert_eq!(beijing_records[0], "联系人1");
+        
+        // 按价格范围查询
+        let query_price_sql = "SELECT contact FROM suppliers WHERE price > ? ORDER BY price";
+        let mut stmt = conn.prepare(query_price_sql).unwrap();
+        let expensive_records: Vec<String> = stmt.query_map([1200.0.to_string()], |row| row.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+            
+        assert_eq!(expensive_records.len(), 2, "价格大于1200的记录应有2条");
     }
     
     // 新增测试用例：测试过滤条件验证
@@ -1172,7 +1202,7 @@ mod tests {
     #[test]
     fn test_export_csv() {
         // 重置测试环境
-        let (_dbfile, _db_path) = setup_test_db();
+        let db_path = setup_test_db();
         
         // 插入一条测试数据
         let supplier = Supplier {
