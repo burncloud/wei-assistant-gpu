@@ -1,6 +1,5 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
-use tempfile::NamedTempFile;
 use std::io;
 use rusqlite::Connection;
 use std::env;

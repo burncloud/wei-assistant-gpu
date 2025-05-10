@@ -6,6 +6,7 @@ use std::env;
 use std::path::Path;
 
 // 获取正确的二进制名称
+#[allow(dead_code)]
 fn get_bin_name() -> String {
     let manifest = env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "wei-assistant-gpu".to_string());
     manifest
@@ -15,6 +16,7 @@ fn get_bin_name() -> String {
 static TEST_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct Supplier {
     contact: Option<String>,
     wechat: Option<String>,
@@ -34,22 +36,39 @@ struct Supplier {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct SupplierRow {
+    #[allow(dead_code)]
     id: i32,
+    #[allow(dead_code)]
     contact: Option<String>,
+    #[allow(dead_code)]
     wechat: Option<String>,
+    #[allow(dead_code)]
     phone: Option<String>,
+    #[allow(dead_code)]
     quantity: Option<i32>,
+    #[allow(dead_code)]
     location: Option<String>,
+    #[allow(dead_code)]
     price: Option<f64>,
+    #[allow(dead_code)]
     bandwidth_price: Option<f64>,
+    #[allow(dead_code)]
     storage_price: Option<f64>,
+    #[allow(dead_code)]
     min_contract_period: Option<String>,
+    #[allow(dead_code)]
     breach_penalties: Option<String>,
+    #[allow(dead_code)]
     payment_terms: Option<String>,
+    #[allow(dead_code)]
     server_name: Option<String>,
+    #[allow(dead_code)]
     server_config: Option<String>,
+    #[allow(dead_code)]
     rental_model: Option<String>,
+    #[allow(dead_code)]
     networking_category: Option<String>,
 }
 

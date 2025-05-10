@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn test_export_csv() {
         // 重置测试环境
-        let db_path = setup_test_db();
+        let _db_path = setup_test_db();
         
         // 插入一条测试数据
         let supplier = Supplier {
